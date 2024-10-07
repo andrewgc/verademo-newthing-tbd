@@ -1,4 +1,6 @@
 # VeraDemo - Blab-a-Gag
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fandrewgc%2FVerademo.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fandrewgc%2FVerademo?ref=badge_shield)
+
 
 ## About...
 
@@ -57,3 +59,7 @@ On the first environment deployment, a script will automatically setup the datab
 ## Exploitation Demos
 
 See the `docs` folder
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fandrewgc%2FVerademo.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fandrewgc%2FVerademo?ref=badge_large)
