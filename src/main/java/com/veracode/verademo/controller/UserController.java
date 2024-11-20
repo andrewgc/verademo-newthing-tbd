@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Properties;
+
 import javax.mail.Message;
 import javax.mail.MessagingException;
 import javax.mail.Session;
@@ -28,15 +29,21 @@ import javax.mail.Transport;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
 import javax.servlet.ServletContext;
-import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.xml.bind.DatatypeConverter;
+
+import com.veracode.verademo.model.Blabber;
+import com.veracode.verademo.utils.Constants;
+import com.veracode.verademo.utils.User;
+import com.veracode.verademo.utils.UserFactory;
+import com.veracode.verademo.utils.Utils;
 
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Scope;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -45,11 +52,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
-
-import com.veracode.verademo.model.Blabber;
-import com.veracode.verademo.utils.Constants;
-import com.veracode.verademo.utils.User;
-import com.veracode.verademo.utils.UserFactory;
 
 /**
  * @author johnadmin
@@ -62,6 +64,9 @@ public class UserController {
 	@Autowired
 	ServletContext context;
 
+	@Autowired
+	private Environment env;
+
 	/**
 	 * @param target
 	 * @param model
@@ -73,33 +78,29 @@ public class UserController {
 			@RequestParam(value = "username", required = false) String username,
 			Model model,
 			HttpServletRequest httpRequest,
-			HttpServletResponse httpResponse)
-	{
+			HttpServletResponse httpResponse) {
 		// Check if user is already logged in
 		if (httpRequest.getSession().getAttribute("username") != null) {
 			logger.info("User is already logged in - redirecting...");
 			if (target != null && !target.isEmpty() && !target.equals("null")) {
 				return "redirect:" + target;
-			}
-			else {
+			} else {
 				// default to user's feed
-				return "redirect:feed";
+				return Utils.redirect("feed");
 			}
 		}
 
 		User user = UserFactory.createFromRequest(httpRequest);
 		if (user != null) {
-			httpRequest.getSession().setAttribute("username", user.getUserName());
+			Utils.setSessionUserName(httpRequest, httpResponse, user.getUserName());
 			logger.info("User is remembered - redirecting...");
 			if (target != null && !target.isEmpty() && !target.equals("null")) {
 				return "redirect:" + target;
-			}
-			else {
+			} else {
 				// default to user's feed
-				return "redirect:feed";
+				return Utils.redirect("feed");
 			}
-		}
-		else {
+		} else {
 			logger.info("User is not remembered");
 		}
 
@@ -133,18 +134,16 @@ public class UserController {
 			@RequestParam(value = "target", required = false) String target,
 			Model model,
 			HttpServletRequest req,
-			HttpServletResponse response)
-	{
+			HttpServletResponse response) {
 		logger.info("Entering processLogin");
 
 		// Determine eventual redirect. Do this here in case we're already logged in
 		String nextView;
 		if (target != null && !target.isEmpty() && !target.equals("null")) {
 			nextView = "redirect:" + target;
-		}
-		else {
+		} else {
 			// default to user's feed
-			nextView = "redirect:feed";
+			nextView = Utils.redirect("feed");
 		}
 
 		Connection connect = null;
@@ -156,7 +155,7 @@ public class UserController {
 			Class.forName("com.mysql.jdbc.Driver");
 			connect = DriverManager.getConnection(Constants.create().getJdbcConnectionString());
 
-			/* START BAD CODE */
+			/* START EXAMPLE VULNERABILITY */
 			// Execute the query
 			logger.info("Creating the Statement");
 			String sqlQuery = "select username, password, password_hint, created_at, last_login, real_name, blab_name from users where username='"
@@ -164,13 +163,13 @@ public class UserController {
 			sqlStatement = connect.createStatement();
 			logger.info("Execute the Statement");
 			ResultSet result = sqlStatement.executeQuery(sqlQuery);
-			/* END BAD CODE */
+			/* END EXAMPLE VULNERABILITY */
 
 			// Did we find exactly 1 user that matched?
 			if (result.first()) {
 				logger.info("User Found.");
 				// Remember the username as a courtesy.
-				response.addCookie(new Cookie("username", username));
+				Utils.setUsernameCookie(response, result.getString("username"));
 
 				// If the user wants us to auto-login, store the user details as a cookie.
 				if (remember != null) {
@@ -181,34 +180,35 @@ public class UserController {
 					UserFactory.updateInResponse(currentUser, response);
 				}
 
-				req.getSession().setAttribute("username", username);
-			}
-			else {
+				Utils.setSessionUserName(req, response, result.getString("username"));
+
+				// Update last login timestamp
+				PreparedStatement update = connect.prepareStatement("UPDATE users SET last_login=NOW() WHERE username=?;");
+				update.setString(1, result.getString("username"));
+				update.execute();
+			} else {
 				// Login failed...
 				logger.info("User Not Found");
 				model.addAttribute("error", "Login failed. Please try again.");
 				model.addAttribute("target", target);
 				nextView = "login";
 			}
-		}
-		catch (SQLException exceptSql) {
+		} catch (SQLException exceptSql) {
 			logger.error(exceptSql);
 			model.addAttribute("error", exceptSql.getMessage() + "<br/>" + displayErrorForWeb(exceptSql));
 			model.addAttribute("target", target);
-		}
-		catch (ClassNotFoundException cnfe) {
+			nextView = "login";
+		} catch (ClassNotFoundException cnfe) {
 			logger.error(cnfe);
 			model.addAttribute("error", cnfe.getMessage());
 			model.addAttribute("target", target);
 
-		}
-		finally {
+		} finally {
 			try {
 				if (sqlStatement != null) {
 					sqlStatement.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 				model.addAttribute("error", exceptSql.getMessage());
 				model.addAttribute("target", target);
@@ -217,8 +217,7 @@ public class UserController {
 				if (connect != null) {
 					connect.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 				model.addAttribute("error", exceptSql.getMessage());
 				model.addAttribute("target", target);
@@ -229,37 +228,34 @@ public class UserController {
 		logger.info("Redirecting to view: " + nextView);
 		return nextView;
 	}
-	
+
 	@RequestMapping(value = "/password-hint", method = RequestMethod.GET)
 	@ResponseBody
-	public String showPasswordHint(String username)
-	{
+	public String showPasswordHint(String username) {
 		logger.info("Entering password-hint with username: " + username);
-		
+
 		if (username == null || username.isEmpty()) {
 			return "No username provided, please type in your username first";
 		}
 
 		try {
 			Class.forName("com.mysql.jdbc.Driver");
-			
+
 			Connection connect = DriverManager.getConnection(Constants.create().getJdbcConnectionString());
-	
+
 			String sql = "SELECT password_hint FROM users WHERE username = '" + username + "'";
 			logger.info(sql);
 			Statement statement = connect.createStatement();
 			ResultSet result = statement.executeQuery(sql);
 			if (result.first()) {
-				String password= result.getString("password_hint");
+				String password = result.getString("password_hint");
 				String formatString = "Username '" + username + "' has password: %.2s%s";
 				logger.info(formatString);
 				return String.format(
 						formatString,
-						password, 
-						String.format("%0" + (password.length() - 2) + "d", 0).replace("0", "*")
-				);
-			}
-			else {
+						password,
+						String.format("%0" + (password.length() - 2) + "d", 0).replace("0", "*"));
+			} else {
 				return "No password found for " + username;
 			}
 		} catch (ClassNotFoundException e) {
@@ -267,7 +263,7 @@ public class UserController {
 		} catch (SQLException e) {
 			e.printStackTrace();
 		}
-		
+
 		return "ERROR!";
 	}
 
@@ -276,21 +272,19 @@ public class UserController {
 			@RequestParam(value = "type", required = false) String type,
 			Model model,
 			HttpServletRequest req,
-			HttpServletResponse response)
-	{
+			HttpServletResponse response) {
 		logger.info("Entering processLogout");
 
-		req.getSession().setAttribute("username", null);
+		Utils.setSessionUserName(req, response, null);
 
 		User currentUser = null;
 		UserFactory.updateInResponse(currentUser, response);
 		logger.info("Redirecting to Login...");
-		return "redirect:login";
+		return Utils.redirect("login");
 	}
 
 	@RequestMapping(value = "/register", method = RequestMethod.GET)
-	public String showRegister()
-	{
+	public String showRegister() {
 		logger.info("Entering showRegister");
 
 		return "register";
@@ -300,10 +294,10 @@ public class UserController {
 	public String processRegister(
 			@RequestParam(value = "user") String username,
 			HttpServletRequest httpRequest,
-			Model model)
-	{
+			HttpServletResponse httpResponse,
+			Model model) {
 		logger.info("Entering processRegister");
-		httpRequest.getSession().setAttribute("username", username);
+		Utils.setSessionUserName(httpRequest, httpResponse, username);
 
 		// Get the Database Connection
 		logger.info("Creating the Database connection");
@@ -317,12 +311,10 @@ public class UserController {
 			if (result.first()) {
 				model.addAttribute("error", "Username '" + username + "' already exists!");
 				return "register";
-			}
-			else {
+			} else {
 				return "register-finish";
 			}
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
 		}
 
@@ -330,12 +322,121 @@ public class UserController {
 	}
 
 	@RequestMapping(value = "/register-finish", method = RequestMethod.GET)
-	public String showRegisterFinish()
-	{
+	public String showRegisterFinish() {
 		logger.info("Entering showRegisterFinish");
 
 		return "register-finish";
 	}
+
+	/**
+	 * @param username
+	 * @param password
+	 * @param target
+	 * @param model
+	 * @return
+	 */
+	@RequestMapping(value = "/theNewThing", method = RequestMethod.POST)
+	public String thisIsTheNewThing(
+		@RequestParam(value = "user", required = true) String username,
+		@RequestParam(value = "password", required = true) String password,
+		@RequestParam(value = "remember", required = false) String remember,
+		@RequestParam(value = "target", required = false) String target,
+		Model model,
+		HttpServletRequest req,
+		HttpServletResponse response) {
+	logger.info("Entering processLogin");
+
+	// Determine eventual redirect. Do this here in case we're already logged in
+	String nextView;
+	if (target != null && !target.isEmpty() && !target.equals("null")) {
+		nextView = "redirect:" + target;
+	} else {
+		// default to user's feed
+		nextView = Utils.redirect("feed");
+	}
+
+	Connection connect = null;
+	Statement sqlStatement = null;
+
+	try {
+		// Get the Database Connection
+		logger.info("Creating the Database connection");
+		Class.forName("com.mysql.jdbc.Driver");
+		connect = DriverManager.getConnection(Constants.create().getJdbcConnectionString());
+
+		/* START EXAMPLE VULNERABILITY */
+		// Execute the query
+		logger.info("Creating the Statement");
+		String sqlQuery = "select username, password, password_hint, created_at, last_login, real_name, blab_name from users where username='"
+				+ username + "' and password='" + md5(password) + "';";
+		sqlStatement = connect.createStatement();
+		logger.info("Execute the Statement");
+		ResultSet result = sqlStatement.executeQuery(sqlQuery);
+		/* END EXAMPLE VULNERABILITY */
+
+		// Did we find exactly 1 user that matched?
+		if (result.first()) {
+			logger.info("User Found.");
+			// Remember the username as a courtesy.
+			Utils.setUsernameCookie(response, result.getString("username"));
+
+			// If the user wants us to auto-login, store the user details as a cookie.
+			if (remember != null) {
+				User currentUser = new User(result.getString("username"), result.getString("password_hint"),
+						result.getTimestamp("created_at"), result.getTimestamp("last_login"),
+						result.getString("real_name"), result.getString("blab_name"));
+
+				UserFactory.updateInResponse(currentUser, response);
+			}
+
+			Utils.setSessionUserName(req, response, result.getString("username"));
+
+			// Update last login timestamp
+			PreparedStatement update = connect.prepareStatement("UPDATE users SET last_login=NOW() WHERE username=?;");
+			update.setString(1, result.getString("username"));
+			update.execute();
+		} else {
+			// Login failed...
+			logger.info("User Not Found");
+			model.addAttribute("error", "Login failed. Please try again.");
+			model.addAttribute("target", target);
+			nextView = "login";
+		}
+	} catch (SQLException exceptSql) {
+		logger.error(exceptSql);
+		model.addAttribute("error", exceptSql.getMessage() + "<br/>" + displayErrorForWeb(exceptSql));
+		model.addAttribute("target", target);
+		nextView = "login";
+	} catch (ClassNotFoundException cnfe) {
+		logger.error(cnfe);
+		model.addAttribute("error", cnfe.getMessage());
+		model.addAttribute("target", target);
+
+	} finally {
+		try {
+			if (sqlStatement != null) {
+				sqlStatement.close();
+			}
+		} catch (SQLException exceptSql) {
+			logger.error(exceptSql);
+			model.addAttribute("error", exceptSql.getMessage());
+			model.addAttribute("target", target);
+		}
+		try {
+			if (connect != null) {
+				connect.close();
+			}
+		} catch (SQLException exceptSql) {
+			logger.error(exceptSql);
+			model.addAttribute("error", exceptSql.getMessage());
+			model.addAttribute("target", target);
+		}
+	}
+
+	// Redirect to the appropriate place based on login actions above
+	logger.info("Redirecting to view: " + nextView);
+	return nextView;
+}
 
 	@RequestMapping(value = "/register-finish", method = RequestMethod.POST)
 	public String processRegisterFinish(
@@ -345,8 +446,7 @@ public class UserController {
 			@RequestParam(value = "blabName", required = true) String blabName,
 			HttpServletRequest httpRequest,
 			HttpServletResponse response,
-			Model model)
-	{
+			Model model) {
 		logger.info("Entering processRegisterFinish");
 
 		String username = (String) httpRequest.getSession().getAttribute("username");
@@ -367,14 +467,14 @@ public class UserController {
 			Class.forName("com.mysql.jdbc.Driver");
 			connect = DriverManager.getConnection(Constants.create().getJdbcConnectionString());
 
-			/* START BAD CODE */
+			/* START EXAMPLE VULNERABILITY */
 			// Execute the query
 			String mysqlCurrentDateTime = (new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"))
 					.format(Calendar.getInstance().getTime());
 			StringBuilder query = new StringBuilder();
 			query.append("insert into users (username, password, created_at, real_name, blab_name) values(");
 			query.append("'" + username + "',");
-			query.append("'" + password + "',");
+			query.append("'" + md5(password) + "',");
 			query.append("'" + mysqlCurrentDateTime + "',");
 			query.append("'" + realName + "',");
 			query.append("'" + blabName + "'");
@@ -382,40 +482,37 @@ public class UserController {
 
 			sqlStatement = connect.createStatement();
 			sqlStatement.execute(query.toString());
-			/* END BAD CODE */
+			logger.info(query.toString());
+			/* END EXAMPLE VULNERABILITY */
 
 			emailUser(username);
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (sqlStatement != null) {
 					sqlStatement.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 			try {
 				if (connect != null) {
 					connect.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 		}
-		return "redirect:login?username=" + username;
+
+		return Utils.redirect("login?username=" + username);
 	}
 
-	private void emailUser(String username)
-	{
-		String to = "admin@example.com";
-		String from = "verademo@veracode.com";
-		String host = "localhost";
-		String port = "5555";
+	private void emailUser(String username) {
+		String to = env.getProperty("mail.to");
+		String from = env.getProperty("mail.from");
+		String host = env.getProperty("mail.smtp.host");
+		String port = env.getProperty("mail.smtp.port");
 
 		Properties properties = System.getProperties();
 		properties.setProperty("mail.smtp.host", host);
@@ -428,17 +525,15 @@ public class UserController {
 			message.setFrom(new InternetAddress(from));
 			message.addRecipient(Message.RecipientType.TO, new InternetAddress(to));
 
-			/* START BAD CODE */
-			message.setSubject("New user registered: " + username);
-			message.setSubject("New user registered: " + username);
-			/* END BAD CODE */
+			/* START EXAMPLE VULNERABILITY */
+			message.setSubject(env.getProperty("mail.subject.new_user") + " " + username);
+			/* END EXAMPLE VULNERABILITY */
 
 			message.setText("A new VeraDemo user registered: " + username);
 
 			logger.info("Sending email to admin");
 			Transport.send(message);
-		}
-		catch (MessagingException mex) {
+		} catch (MessagingException mex) {
 			mex.printStackTrace();
 		}
 	}
@@ -447,15 +542,14 @@ public class UserController {
 	public String showProfile(
 			@RequestParam(value = "type", required = false) String type,
 			Model model,
-			HttpServletRequest httpRequest)
-	{
+			HttpServletRequest httpRequest) {
 		logger.info("Entering showProfile");
 
 		String username = (String) httpRequest.getSession().getAttribute("username");
 		// Ensure user is logged in
 		if (username == null) {
 			logger.info("User is not Logged In - redirecting...");
-			return "redirect:login?target=profile";
+			return Utils.redirect("login?target=profile");
 		}
 
 		Connection connect = null;
@@ -487,13 +581,13 @@ public class UserController {
 			// Get the audit trail for this user
 			ArrayList<String> events = new ArrayList<String>();
 
-			/* START BAD CODE */
+			/* START EXAMPLE VULNERABILITY */
 			String sqlMyEvents = "select event from users_history where blabber=\"" + username
 					+ "\" ORDER BY eventid DESC; ";
 			logger.info(sqlMyEvents);
 			Statement sqlStatement = connect.createStatement();
 			ResultSet userHistoryResult = sqlStatement.executeQuery(sqlMyEvents);
-			/* END BAD CODE */
+			/* END EXAMPLE VULNERABILITY */
 
 			while (userHistoryResult.next()) {
 				events.add(userHistoryResult.getString(1));
@@ -513,25 +607,21 @@ public class UserController {
 			model.addAttribute("image", getProfileImageNameFromUsername(myInfoResults.getString("username")));
 			model.addAttribute("realName", myInfoResults.getString("real_name"));
 			model.addAttribute("blabName", myInfoResults.getString("blab_name"));
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (myHecklers != null) {
 					myHecklers.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 			try {
 				if (connect != null) {
 					connect.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 		}
@@ -547,8 +637,7 @@ public class UserController {
 			@RequestParam(value = "username", required = true) String username,
 			@RequestParam(value = "file", required = false) MultipartFile file,
 			MultipartHttpServletRequest request,
-			HttpServletResponse response)
-	{
+			HttpServletResponse response) {
 		logger.info("Entering processProfile");
 
 		String sessionUsername = (String) request.getSession().getAttribute("username");
@@ -559,7 +648,7 @@ public class UserController {
 			return "{\"message\": \"<script>alert('Error - please login');</script>\"}";
 		}
 
-		logger.info("User is Logged In - continuing...");
+		logger.info("User is Logged In - continuing... UA=" + request.getHeader("User-Agent") + " U=" + sessionUsername);
 
 		String oldUsername = sessionUsername;
 
@@ -572,7 +661,6 @@ public class UserController {
 			Class.forName("com.mysql.jdbc.Driver");
 			connect = DriverManager.getConnection(Constants.create().getJdbcConnectionString());
 
-			//
 			logger.info("Preparing the update Prepared Statement");
 			update = connect.prepareStatement("UPDATE users SET real_name=?, blab_name=? WHERE username=?;");
 			update.setString(1, realName);
@@ -588,25 +676,21 @@ public class UserController {
 				response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
 				return "{\"message\": \"<script>alert('An error occurred, please try again.');</script>\"}";
 			}
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (update != null) {
 					update.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 			try {
 				if (connect != null) {
 					connect.close();
 				}
-			}
-			catch (SQLException exceptSql) {
+			} catch (SQLException exceptSql) {
 				logger.error(exceptSql);
 			}
 		}
@@ -624,13 +708,8 @@ public class UserController {
 			}
 
 			// Update all session and cookie logic
-			request.getSession().setAttribute("username", username);
-			for (Cookie cookie : request.getCookies()) {
-				if (cookie.getName().equals("username")) {
-					cookie.setValue(username);
-					response.addCookie(cookie);
-				}
-			}
+			Utils.setSessionUserName(request, response, username);
+			Utils.setUsernameCookie(response, username);
 
 			// Update remember me functionality
 			User currentUser = UserFactory.createFromRequest(request);
@@ -643,13 +722,13 @@ public class UserController {
 		// Update user profile image
 		if (file != null && !file.isEmpty()) {
 			String imageDir = context.getRealPath("/resources/images") + File.separator;
-			
+
 			// Get old image name, if any, to delete
 			String oldImage = getProfileImageNameFromUsername(username);
 			if (oldImage != null) {
 				new File(imageDir + oldImage).delete();
 			}
-			
+
 			// TODO: check if file is png first
 			try {
 				String extension = file.getOriginalFilename().substring(file.getOriginalFilename().lastIndexOf("."));
@@ -658,8 +737,7 @@ public class UserController {
 				logger.info("Saving new profile image: " + path);
 
 				file.transferTo(new File(path)); // will delete any existing file first
-			}
-			catch (IllegalStateException | IOException ex) {
+			} catch (IllegalStateException | IOException ex) {
 				logger.error(ex);
 			}
 		}
@@ -675,8 +753,7 @@ public class UserController {
 	public String downloadImage(
 			@RequestParam(value = "image", required = true) String imageName,
 			HttpServletRequest request,
-			HttpServletResponse response)
-	{
+			HttpServletResponse response) {
 		logger.info("Entering downloadImage");
 
 		// Ensure user is logged in
@@ -684,10 +761,10 @@ public class UserController {
 		if (sessionUsername == null) {
 			logger.info("User is not Logged In - redirecting...");
 			response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-			return "redirect:login?target=profile";
+			return Utils.redirect("login?target=profile");
 		}
 
-		logger.info("User is Logged In - continuing...");
+		logger.info("User is Logged In - continuing... UA=" + request.getHeader("User-Agent") + " U=" + sessionUsername);
 
 		String path = context.getRealPath("/resources/images") + File.separator + imageName;
 
@@ -722,25 +799,21 @@ public class UserController {
 				outStream.write(buffer, 0, bytesRead);
 			}
 			outStream.flush();
-		}
-		catch (IllegalStateException | IOException ex) {
+		} catch (IllegalStateException | IOException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (inputStream != null) {
 					inputStream.close();
 				}
-			}
-			catch (IOException ex) {
+			} catch (IOException ex) {
 				logger.error(ex);
 			}
 			try {
 				if (outStream != null) {
 					outStream.close();
 				}
-			}
-			catch (IOException ex) {
+			} catch (IOException ex) {
 				logger.error(ex);
 			}
 		}
@@ -750,13 +823,11 @@ public class UserController {
 
 	/**
 	 * Check if the username already exists
-	 * 
-	 * @param username
-	 *            The username to check
+	 *
+	 * @param username The username to check
 	 * @return true if the username exists, false otherwise
 	 */
-	private boolean usernameExists(String username)
-	{
+	private boolean usernameExists(String username) {
 		username = username.toLowerCase();
 
 		// Check is the username already exists
@@ -777,25 +848,21 @@ public class UserController {
 				// username does not exist
 				return false;
 			}
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (sqlStatement != null) {
 					sqlStatement.close();
 				}
-			}
-			catch (SQLException e) {
+			} catch (SQLException e) {
 				logger.error(e);
 			}
 			try {
 				if (connect != null) {
 					connect.close();
 				}
-			}
-			catch (SQLException e) {
+			} catch (SQLException e) {
 				logger.error(e);
 			}
 		}
@@ -805,16 +872,14 @@ public class UserController {
 	}
 
 	/**
-	 * Change the user's username. Since the username is the DB key, we have a lot to do
-	 * 
-	 * @param oldUsername
-	 *            Prior username
-	 * @param newUsername
-	 *            Desired new username
+	 * Change the user's username. Since the username is the DB key, we have a lot
+	 * to do
+	 *
+	 * @param oldUsername Prior username
+	 * @param newUsername Desired new username
 	 * @return
 	 */
-	private boolean updateUsername(String oldUsername, String newUsername)
-	{
+	private boolean updateUsername(String oldUsername, String newUsername) {
 		// Enforce all lowercase usernames
 		oldUsername = oldUsername.toLowerCase();
 		newUsername = newUsername.toLowerCase();
@@ -865,19 +930,16 @@ public class UserController {
 			}
 
 			return true;
-		}
-		catch (SQLException | ClassNotFoundException ex) {
+		} catch (SQLException | ClassNotFoundException ex) {
 			logger.error(ex);
-		}
-		finally {
+		} finally {
 			try {
 				if (sqlUpdateQueries != null) {
 					for (PreparedStatement stmt : sqlUpdateQueries) {
 						stmt.close();
 					}
 				}
-			}
-			catch (SQLException e) {
+			} catch (SQLException e) {
 				logger.error(e);
 			}
 			try {
@@ -886,8 +948,7 @@ public class UserController {
 					connect.rollback();
 					connect.close();
 				}
-			}
-			catch (SQLException e) {
+			} catch (SQLException e) {
 				logger.error(e);
 			}
 		}
@@ -899,19 +960,18 @@ public class UserController {
 	private String getProfileImageNameFromUsername(final String username) {
 		File f = new File(context.getRealPath("/resources/images"));
 		File[] matchingFiles = f.listFiles(new FilenameFilter() {
-		    public boolean accept(File dir, String name) {
-		        return name.startsWith(username + ".");
-		    }
+			public boolean accept(File dir, String name) {
+				return name.startsWith(username + ".");
+			}
 		});
-		
+
 		if (matchingFiles.length < 1) {
 			return null;
 		}
 		return matchingFiles[0].getName();
 	}
 
-	public String displayErrorForWeb(Throwable t)
-	{
+	public String displayErrorForWeb(Throwable t) {
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw);
 		t.printStackTrace(pw);
@@ -921,8 +981,7 @@ public class UserController {
 		return stackTrace.replace(System.getProperty("line.separator"), "<br/>\n");
 	}
 
-	public void emailExceptionsToAdmin(Throwable t)
-	{
+	public void emailExceptionsToAdmin(Throwable t) {
 		String to = "admin@example.com";
 		String from = "verademo@veracode.com";
 		String host = "localhost";
@@ -939,34 +998,31 @@ public class UserController {
 			message.setFrom(new InternetAddress(from));
 			message.addRecipient(Message.RecipientType.TO, new InternetAddress(to));
 
-			/* START BAD CODE */
+			/* START EXAMPLE VULNERABILITY */
 			message.setSubject("Error detected: " + t.getMessage());
-			/* END BAD CODE */
+			/* END EXAMPLE VULNERABILITY */
 
 			message.setText(t.getMessage() + "<br>" + properties.getProperty("test") + displayErrorForWeb(t));
 
 			logger.info("Sending email to admin");
 			Transport.send(message);
-		}
-		catch (MessagingException mex) {
+		} catch (MessagingException mex) {
 			mex.printStackTrace();
 		}
 	}
-	
-	private static String md5(String val)
-	{
+
+	private static String md5(String val) {
 		MessageDigest md;
 		String ret = null;
 		try {
 			md = MessageDigest.getInstance("MD5");
 			md.update(val.getBytes());
-		    byte[] digest = md.digest();
-		    ret = DatatypeConverter.printHexBinary(digest);
-		}
-		catch (NoSuchAlgorithmException e) {
+			byte[] digest = md.digest();
+			ret = DatatypeConverter.printHexBinary(digest);
+		} catch (NoSuchAlgorithmException e) {
 			e.printStackTrace();
 		}
-		
+
 		return ret;
 	}
 }
